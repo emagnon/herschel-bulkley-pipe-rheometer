@@ -28,7 +28,7 @@ The parameter estimation process follows the physics-based approach from the pap
 ## Repository Structure
 
 ```
-hb-parameter-estimation/
+herschel-bulkley-pipe-rheometer/
 ├── .gitignore
 ├── LICENSE
 ├── README.md
