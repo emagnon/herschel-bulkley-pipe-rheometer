@@ -21,79 +21,63 @@ def butter_lowpass_filter(data: np.ndarray, cutoff: float, fs: float, order: int
 
 def generate_synthetic_data(output_path: str, R: float = 0.007875):
     """
-    Generates synthetic time-series data mimicking the raw data characteristics
-    from the paper for a Carbopol fluid. This version preserves true zero-flow
-    samples and adds realistic stress-overshoot bumps after rest-to-flow transitions.
+    Generates realistic synthetic time-series data that mimics the raw data
+    characteristics from the paper for a Carbopol fluid.
+
+    The process uses the "true" rheometer parameters to calculate ideal pressure
+    gradients from a flow rate profile, then adds realistic noise, drift, and outliers.
 
     Args:
         output_path: Path to save the generated CSV file.
         R: Pipe radius (m).
     """
-    np.random.seed(2021)  # reproducibility
+    np.random.seed(2021) # for reproducibility
 
-    # "Ground Truth" parameters from rheometer measurements (paper)
+    # "Ground Truth" parameters from paper's rheometer measurements
     params_true = {'tau_0': 1.198, 'K': 0.2717, 'n': 0.6389}
 
-    # Time base
+    # Generate a realistic flow rate time-series profile
     n_points = 2000
     time = np.linspace(0, 200, n_points)
-
-    # Piecewise-constant flow schedule (m^3/s)
     Q = np.zeros(n_points)
+    
+    # Define flow rate segments (m³/s) to mimic an experiment
     flow_segments = [
-        (0, 200, 0), (200, 400, 1.0e-4), (400, 600, 2.0e-4), (600, 800, 4.0e-4),
-        (800, 1000, 6.0e-4), (1000, 1200, 8.0e-4), (1200, 1400, 4.0e-4),
-        (1400, 1600, 2.0e-4), (1600, 1800, 1.0e-4), (1800, 2000, 0.0)
+        (0, 200, 0), (200, 400, 0.0001), (400, 600, 0.0002), (600, 800, 0.0004),
+        (800, 1000, 0.0006), (1000, 1200, 0.0008), (1200, 1400, 0.0004),
+        (1400, 1600, 0.0002), (1600, 1800, 0.0001), (1800, 2000, 0)
     ]
-    for s, e, q in flow_segments:
-        Q[s:e] = q
+    for start, end, flow_rate in flow_segments:
+        Q[start:end] = flow_rate
 
-    # Add small noise, low-pass, then enforce a deadband to keep true zeros
-    Q += np.random.normal(0, 5e-6, n_points)
-    Q[Q < 0] = 0.0
-    Q = butter_lowpass_filter(Q, cutoff=0.4, fs=10, order=2)  # mild sensor smoothing
-    Q[np.abs(Q) < 2e-6] = 0.0  # deadband to preserve zeros for Fig.4(b)
+    # Add noise and smooth transitions
+    Q += np.random.normal(0, 0.000005, n_points)
+    Q[Q < 0] = 0
+    Q = butter_lowpass_filter(Q, cutoff=2, fs=10, order=2)
 
-    # Ideal pressure gradient from inverse HB model (Eq. 8 + Eq. 5)
+    # Calculate ideal pressure gradients using the inverse HB model
     dP_ideal = np.zeros(n_points)
     for i in range(n_points):
-        tau_w_i = model.inverse_hb_model(Q[i], **params_true, R=R)
-        dP_ideal[i] = 2 * tau_w_i / R  # Pa/m
+        tau_w_ideal = model.inverse_hb_model(Q[i], **params_true, R=R)
+        dP_ideal[i] = 2 * tau_w_ideal / R
 
-    # Sensor noise and slow drift
-    noise_levels = {'dP1': 20.0, 'dP2': 15.0, 'dP3': 25.0}  # Pa/m std
-    drifts = {
-        'dP1': np.linspace(0.0, 10.0, n_points),
-        'dP2': np.linspace(0.0, -5.0, n_points),
-        'dP3': np.linspace(0.0, 8.0, n_points)
-    }
-
-    # Identify rest-to-flow edges to inject overshoot bumps (gel-breaking)
-    edges = np.where((Q[:-1] == 0.0) & (Q[1:] > 0.0))[0] + 1
-
+    # Simulate three different pressure sensors with unique noise and drift
+    noise_levels = {'dP1': 20, 'dP2': 15, 'dP3': 25}
+    drifts = {'dP1': np.linspace(0, 10, n_points), 'dP2': np.linspace(0, -5, n_points), 'dP3': np.linspace(0, 8, n_points)}
+    
     dP_sensors = {}
     for name, noise in noise_levels.items():
-        sig = dP_ideal.copy()
+        sensor_reading = dP_ideal + np.random.normal(0, noise, n_points) + drifts[name]
+        # Add stress overshoot behavior at low flow, as seen in paper Figure 4
+        gel_mask = Q < 1e-6
+        sensor_reading[gel_mask] += np.random.uniform(0, 2 * params_true['tau_0'] / R * 0.5)
+        dP_sensors[name] = sensor_reading
 
-        # Add decaying overshoot bumps with magnitudes similar to Fig. 4 (0–1150 Pa/m)
-        for e in edges:
-            width = 50  # ~5 s at 10 Hz
-            A = np.random.uniform(600.0, 1200.0)  # Pa/m
-            decay = np.exp(-np.arange(width) / 15.0)
-            end = min(e + width, n_points)
-            sig[e:end] += A * decay[: end - e]
-
-        # Add noise and drift
-        sig += np.random.normal(0.0, noise, n_points)
-        sig += drifts[name]
-
-        dP_sensors[name] = sig
-
-    # Add sparse outliers on one sensor to mimic occasional spikes
+    # Add some sporadic outliers
     outlier_indices = np.random.choice(n_points, size=int(0.01 * n_points), replace=False)
     dP_sensors['dP1'][outlier_indices] *= np.random.uniform(1.5, 2.0)
 
-    # Save
+    # Create and save DataFrame
     df = pd.DataFrame({
         'time': time,
         'Q': Q,
