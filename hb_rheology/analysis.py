@@ -232,6 +232,8 @@ def reproduce_paper_analysis(filepath: str, R: float = 0.007875):
     tau_w = model.calculate_wall_shear_stress(dP_L, R)
     gamma_N_w = (4.0 * Q) / (np.pi * R**3)
 
+    reproduce_figure_3(tau_w, gamma_N_w)
+    
     # Fit pipeline (L-M and Mullineux)
     params_lm, params_mullineux = estimation.run_full_estimation_pipeline(Q, dP_L, R)
 
